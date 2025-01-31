@@ -1,0 +1,95 @@
+
+// ----- tail ----- //
+
+// [[Rcpp::export]]
+std::vector<double> approx_pi_y_theta(double m,double s,const vector<double>& x,const vector<double>& z,const vector<double>& pars, double lambda0=NA_REAL,double sigma0=NA_REAL,const double lb=0.0,const double ub=1.0,const double eps=1E-9,const bool print_out=1){
+
+  double lambda = lambda0; 
+  double sigma = sigma0; 
+  double y = 1.99; 
+  m=rescale(m,lb,ub);
+  
+  int k = 0; double K1; double K2;
+  while((abs(y/lambda-1))>eps){ 
+    y = lambda;
+    K1 = d1lnfy(rescale_inv(y,lb,ub),x,z,lb,ub,pars) + s*log(m/(1 - m)) + s*(-boost::math::polygamma(0,s*y) + boost::math::polygamma(0,s - s*y));
+    K2 = d2lnfy(rescale_inv(y,lb,ub),x,z,lb,ub,pars) - pow(s,2)*(boost::math::polygamma(1,s*y) + boost::math::polygamma(1,s - s*y));
+    lambda = (1 + y*(-2 + K1 + sigma - K1*y))/sigma;
+    sigma = (1 - (-1 + y)*y*(-2 + K2*(-1 + y)*y))/(lambda - 2*lambda*y + pow(y,2));
+    
+    if(print_out){std::cout << k << ", " << lambda << ", " << rescale_inv(lambda,lb,ub) << ", " << sigma << std::endl;}
+    if(std::isnan(lambda)||std::isnan(sigma)){break;}
+    k++;
+  }
+  
+  return {lambda, sigma};
+}
+
+// [[Rcpp::export]]
+std::vector<double> sampling_y_theta(double m,double s,const vector<double>& x,const vector<double>& z,const vector<double>& pars, double lambda0=NA_REAL,double sigma0=NA_REAL,const double lb=0.0,const double ub=1.0,const int maxiter=150,const double eps=1E-9,const bool print_out=0, const int seedx=-1, const double sigma0delta=20.0){
+  Random::seed();
+  
+  vector<double> xout(5);
+  
+  if(std::isnan(lambda0)){lambda0 = rescale(m,lb,ub);} //starting point for lambda
+  
+  // Smart initialization for sigma0 -- Note: starting point for sigma0 is what makes stochastic this algorithm
+  vector<double> sigma_k(maxiter); // -1 is a sentinel value for sigma0
+  if(sigma0 < 0){ 
+    for(int i=0; i<maxiter; i++){sigma_k[i] = s + Random::runif(abs(s-sigma0delta),s+sigma0delta);}
+  }else if(std::isnan(sigma0)){
+    for(int i=0; i<maxiter; i++){sigma_k[i] = Random::runif(2.99,300.99);} 
+  }else{
+    for(int i=0; i<maxiter; i++){sigma_k[i] = sigma0;} 
+  }
+    
+  int k = 0;
+  int cond = 0;
+  
+  // Run the 4P-Beta approximation of pi(y|theta) --solutions {lambda,sigma} are searched untile they are feasible
+  vector<double> out(2);
+  while(cond<=0 && k<=maxiter){
+    out = approx_pi_y_theta(m,s,x,z,pars,lambda0,sigma_k[k],lb,ub,eps,print_out);
+    cond = 2-( static_cast<int>(std::isnan(out[0])) + static_cast<int>(std::isnan(out[1])) );
+    k++;
+  }
+  
+  // Draw a random realization from the (0,1)-Beta distribution and linearly transform into [lb,ub]
+  double ystar;
+  if(seedx>0){Random::seed(seedx);}else{Random::seed();} // set the seed of the RNG chain only if required
+  if(cond>0 && k<=maxiter){ //random samples are obtained only if the approximation converged
+    ystar  = rescale_inv(Random::rbeta(out[0]*out[1],out[1]-out[1]*out[0]),lb,ub);
+  }else{
+    std::cerr << "approx_pi_y_theta failed: No solution found. Using observed values." << std::endl;
+    ystar = rescale_inv(Random::rbeta(m*s,s-m*s),lb,ub);
+  }
+  
+  xout = {ystar,out[0],out[1],static_cast<double>(cond),static_cast<double>(k)};
+  return xout;
+}
+
+// [[Rcpp::export]]
+vector<vector<double>> sampling_y_theta_loop(vector<double>& m, vector<double>& s, const vector<vector<double>>& X,vector<vector<double>>& Z,vector<double> pars,double lb = 0.0,double ub = 1.0,double lambda0 = NA_REAL, double sigma0 = NA_REAL, double eps = 1E-9,bool print_out = 0,int maxiter = 150,int seedx = -1,double sigma0delta=20.0){
+  int n = X.size(); // Number of rows in X
+  vector<vector<double>> out(n, vector<double>(5));
+  bool cond; 
+  int k;
+    
+  for (int i = 0; i < n; i++) {
+    if(sigma0==-2){ //brute-force way to retrieve feasible approximations (it depends heavily by sigma0)
+      cond = true;
+      k = 0;
+      while(cond || k < 5e2){
+        k += 1;
+        out[i] = sampling_y_theta(m[i], s[i], X[i], Z[i], pars, lambda0, std::nan(""), lb, ub, maxiter, eps, print_out, seedx, sigma0delta);
+        if(out[i][3]>1){cond=false;}
+      }
+    }else{
+      out[i] = sampling_y_theta(m[i], s[i], X[i], Z[i], pars, lambda0, sigma0, lb, ub, maxiter, eps, print_out, seedx);
+    }
+  }
+
+  return out; // Return the result
+}
+
+

@@ -1,0 +1,504 @@
+#include <Rcpp.h>
+#include <cmath>        
+#include <cstdlib>     
+#include <vector>
+#include <functional>
+#include <cstdint> //`uint32_t`
+#include <iostream>
+#include <stdexcept>
+#include <random>
+#include <numeric> // For std::iota
+#include <boost/math/special_functions/polygamma.hpp>
+#include <boost/math/special_functions/digamma.hpp>
+#include <boost/math/special_functions/trigamma.hpp>
+#include <boost/numeric/ublas/matrix.hpp>
+#include <boost/numeric/ublas/lu.hpp>
+using namespace std;
+namespace ublas = boost::numeric::ublas;
+
+
+// ----- Insert your own Cpp functions here ----- //
+// ----- This section can be modified at your convenience! ----- //
+
+// ----- head ----- //
+
+class Random {
+private:
+  static std::mt19937 rng; // Static RNG instance
+  
+public:
+  // Manually set the seed
+  static void seed(uint32_t seed) {
+    rng.seed(static_cast<std::mt19937::result_type>(seed));
+  }
+  
+  // Auto set.seed() using time
+  static void seed() {
+    auto now = std::chrono::high_resolution_clock::now();
+    auto duration = now.time_since_epoch();
+    uint64_t nanos = std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count();
+  }
+  
+  // Access the generator
+  static std::mt19937& get_rng() {
+    return rng;
+  }
+  
+  // Uniform distribution (similar to R's runif)
+  static double runif(double min = 0.0, double max = 1.0) {
+    std::uniform_real_distribution<double> dist(min, max);
+    return dist(rng);
+  }
+  
+  // Normal distribution (similar to R's rnorm)
+  static double rnorm(double mean = 0.0, double sd = 1.0) {
+    std::normal_distribution<double> dist(mean, sd);
+    return dist(rng);
+  }
+  
+  // Beta distribution (similar to R's rbeta)
+  static double rbeta(double alpha, double beta) {
+    if (alpha <= 0 || beta <= 0) {
+      throw std::invalid_argument("Alpha and Beta parameters must be positive.");
+    }
+    
+    std::gamma_distribution<double> gamma_alpha(alpha, 1.0);
+    std::gamma_distribution<double> gamma_beta(beta, 1.0);
+    
+    double x = gamma_alpha(rng); // Sample from Gamma(alpha, 1)
+    double y = gamma_beta(rng);  // Sample from Gamma(beta, 1)
+    
+    return x / (x + y); // Transform to Beta(alpha, beta)
+  }
+};
+
+const double pi = 3.14159265358979323846;
+const double NaN = std::numeric_limits<double>::quiet_NaN();
+
+template <typename T>
+  void print_vector(const std::vector<T>& vec) {
+    for (const T& val : vec) {
+      std::cout << val << " ";
+    }
+    std::cout << std::endl;
+  }
+
+template <typename T>
+  void print(const T& value) {
+    std::cout << value << std::endl;
+  }
+  
+template <typename T>
+std::vector<T> c(std::initializer_list<T> values) {
+    return std::vector<T>(values);
+}  
+
+double rescale(double x, const double lb=0.0, const double ub=1.0){
+  double xout = std::nan("");
+  if(lb<ub){xout = (x-lb)/(ub-lb);}
+  return xout;
+}
+
+double rescale_inv(double x, const double lb=0.0, const double ub=1.0){
+  double xout = std::nan("");
+  if(lb<ub){xout = lb+(ub-lb)*x;}
+  return xout;
+}
+
+double matrixmult1d(const vector<double>& x, const vector<double>& b){
+  if (x.size() != b.size()) {
+    throw std::invalid_argument("matrixMult1d: Vectors must have the same size");
+  }
+  
+  double out = 0.0;
+  for(int j = 0; j < x.size(); j++){
+    out += x[j]*b[j];
+  }
+  return out;
+}
+
+// ..the same as above but it works for int types
+double matrixmult1d(const vector<double>& x, const vector<int>& b){
+  if (x.size() != b.size()) {
+    throw std::invalid_argument("matrixMult1d: Vectors must have the same size");
+  }
+  
+  double out = 0.0;
+  for(int j = 0; j < x.size(); j++){
+    if (b[j] != 0){out += x[j];}
+  }
+  return out;
+}
+
+// Overload for vector / scalar
+std::vector<double> operator/(const std::vector<double>& vec, double scalar) {
+    if (scalar == 0.0) {
+        throw std::invalid_argument("Division by zero is not allowed.");
+    }
+
+    std::vector<double> result(vec.size());
+    for (size_t i = 0; i < vec.size(); ++i) {
+        result[i] = vec[i] / scalar;
+    }
+    return result;
+}
+
+// Overload for scalar / vector
+std::vector<double> operator/(double scalar, const std::vector<double>& vec) {
+    if (scalar == 0.0) {
+        throw std::invalid_argument("Division by zero is not allowed.");
+    }
+
+    std::vector<double> result(vec.size());
+    for (size_t i = 0; i < vec.size(); ++i) {
+        result[i] = scalar / vec[i];
+    }
+    return result;
+}
+
+// Overload for vector * scalar
+std::vector<double> operator*(const std::vector<double>& vec, double scalar) {
+    std::vector<double> result(vec.size());
+    for (size_t i = 0; i < vec.size(); ++i) {
+        result[i] = vec[i] * scalar;
+    }
+    return result;
+}
+
+// Overload for scalar * vector (commutative)
+std::vector<double> operator*(double scalar, const std::vector<double>& vec) {
+    return vec * scalar;
+}
+
+std::vector<double> x_seq(const std::vector<double>& x,int a, int b){
+  vector<double> xout;
+  if((b-a)==0){a-=1;}
+    for(int i = a; i < b; i++){
+      xout.push_back(x[i]);
+      }
+    return xout;
+}
+
+// Overload for pow function to work with vectors with a single element only x[0]
+double pow(const std::vector<double>& x, int b) {
+  return pow(x[0],b);
+}
+
+// Function to compute Cartesian product of two integer vectors
+std::vector<std::vector<int>> expand_grid(const std::vector<int>& vec1, const std::vector<int>& vec2,bool unique=false) {
+  std::vector<std::vector<int>> result;
+  
+  // Generate Cartesian product
+  for (int i : vec1) {
+    for (int j : vec2) {
+      if(unique){
+        if(i>=j){result.push_back({i, j});}
+      }else{
+        result.push_back({i, j});
+      }
+    }
+  }
+  return result;
+}
+
+// Convert a vector to a symmetric matrix
+std::vector<std::vector<double>> vector_to_symmetric_matrix(const std::vector<double>& x, int JH,bool symm=true) {
+  
+  int K = (JH * (JH + 1)) / 2;
+  if (x.size() != K) {
+    throw std::invalid_argument("Vector size does not match the required lower triangular matrix size.");
+  }
+  
+  std::vector<std::vector<double>> X(JH, std::vector<double>(JH, 0.0));
+  
+  int k = 0; // Index for the input vector
+  for (int j = 0; j < JH; ++j) {
+    for (int i = 0; i < JH; ++i) { 
+      if(i>=j){
+        X[i][j] = x[k];
+        if(symm){X[j][i] = x[k];} // Make it symmetric 
+        ++k;
+        }
+    }
+  }
+  return X;
+}
+
+double digamma(const double x){
+  return boost::math::digamma(x);
+}
+
+double trigamma(const double x){
+  return boost::math::trigamma(x);
+}
+
+// Create a diagonal matrix from a vector
+std::vector<std::vector<double>> diag(const std::vector<double>& vec) {
+    size_t n = vec.size();
+    std::vector<std::vector<double>> matrix(n, std::vector<double>(n, 0.0));
+
+    for (size_t i = 0; i < n; ++i) {
+        matrix[i][i] = vec[i]; // Set diagonal elements
+    }
+    return matrix;
+}
+
+// Overload for vector - scalar
+std::vector<double> operator-(const std::vector<double>& vec1, const std::vector<double>& vec2) {
+    std::vector<double> result(vec1.size());
+    for (size_t i = 0; i < vec1.size(); ++i) {
+        result[i] = vec1[i] - vec2[i];
+    }
+    return result;
+}
+
+// Overload for vector + scalar
+std::vector<double> operator+(const std::vector<double>& vec1, const std::vector<double>& vec2) {
+    std::vector<double> result(vec1.size());
+    for (size_t i = 0; i < vec1.size(); ++i) {
+        result[i] = vec1[i] + vec2[i];
+    }
+    return result;
+}
+
+// Matrix multiplication function
+std::vector<std::vector<double>> matrix_multiply(const std::vector<std::vector<double>>& A,
+                                                 const std::vector<std::vector<double>>& B) {
+  size_t rows_A = A.size();
+  size_t cols_A = A[0].size();
+  size_t rows_B = B.size();
+  size_t cols_B = B[0].size();
+  
+  // Ensure dimensions are compatible for multiplication
+  if (cols_A != rows_B) {
+    throw std::invalid_argument("Matrix dimensions do not match for multiplication.");
+  }
+  
+  // Initialize the result matrix with zeros
+  std::vector<std::vector<double>> result(rows_A, std::vector<double>(cols_B, 0.0));
+  
+  // Perform multiplication
+  for (size_t i = 0; i < rows_A; ++i) {
+    for (size_t j = 0; j < cols_B; ++j) {
+      for (size_t k = 0; k < cols_A; ++k) {
+        result[i][j] += A[i][k] * B[k][j];
+      }
+    }
+  }
+  
+  return result;
+}
+
+// Matrix-Vector Multiplication
+std::vector<double> matrix_multiply(const std::vector<std::vector<double>>& A,
+                                    const std::vector<double>& b) {
+  size_t rows_A = A.size();
+  size_t cols_A = A[0].size();
+  
+  // Ensure dimensions are compatible
+  if (cols_A != b.size()) {
+    throw std::invalid_argument("Matrix and vector dimensions do not match.");
+  }
+  
+  // Result vector
+  std::vector<double> result(rows_A, 0.0);
+  
+  // Matrix-vector multiplication
+  for (size_t i = 0; i < rows_A; ++i) {
+    for (size_t j = 0; j < cols_A; ++j) {
+      result[i] += A[i][j] * b[j];
+    }
+  }
+  
+  return result;
+}
+
+// Vector-Matrix Multiplication
+std::vector<double> matrix_multiply(const std::vector<double>& a,
+                                    const std::vector<std::vector<double>>& B) {
+  size_t cols_B = B[0].size();
+  size_t rows_B = B.size();
+  
+  // Ensure dimensions are compatible
+  if (a.size() != rows_B) {
+    throw std::invalid_argument("Vector and matrix dimensions do not match.");
+  }
+  
+  // Result vector
+  std::vector<double> result(cols_B, 0.0);
+  
+  // Vector-matrix multiplication
+  for (size_t j = 0; j < cols_B; ++j) {
+    for (size_t i = 0; i < rows_B; ++i) {
+      result[j] += a[i] * B[i][j];
+    }
+  }
+  
+  return result;
+}
+
+// Matrix subtraction function
+std::vector<std::vector<double>> operator-(const std::vector<std::vector<double>>& A,
+                                           const std::vector<std::vector<double>>& B) {
+    size_t rows = A.size();
+    size_t cols = A[0].size();
+
+    // Ensure matrices have the same dimensions
+    if (rows != B.size() || cols != B[0].size()) {
+        throw std::invalid_argument("Matrix dimensions must match for subtraction.");
+    }
+
+    // Result matrix
+    std::vector<std::vector<double>> result(rows, std::vector<double>(cols, 0.0));
+
+    // Perform element-wise subtraction
+    for (size_t i = 0; i < rows; ++i) {
+        for (size_t j = 0; j < cols; ++j) {
+            result[i][j] = A[i][j] - B[i][j];
+        }
+    }
+
+    return result;
+}
+
+// Matrix addition function
+std::vector<std::vector<double>> operator+(const std::vector<std::vector<double>>& A,
+                                           const std::vector<std::vector<double>>& B) {
+  size_t rows = A.size();
+  size_t cols = A[0].size();
+  
+  // Ensure matrices have the same dimensions
+  if (rows != B.size() || cols != B[0].size()) {
+    throw std::invalid_argument("Matrix dimensions must match for subtraction.");
+  }
+  
+  // Result matrix
+  std::vector<std::vector<double>> result(rows, std::vector<double>(cols, 0.0));
+  
+  // Perform element-wise subtraction
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t j = 0; j < cols; ++j) {
+      result[i][j] = A[i][j] + B[i][j];
+    }
+  }
+  
+  return result;
+}
+
+template<typename T>
+ublas::matrix<T> invert_matrix(const ublas::matrix<T>& input) {
+  using namespace boost::numeric::ublas;
+  
+  // Create a working copy of the input
+  matrix<T> A(input);
+  
+  // Create a permutation matrix for LU decomposition
+  permutation_matrix<std::size_t> pm(A.size1());
+  
+  // Perform LU factorization
+  if (lu_factorize(A, pm) != 0) {
+    throw std::runtime_error("Matrix is singular and cannot be inverted.");
+  }
+  
+  // Create an identity matrix of the same size as input
+  matrix<T> inverse = identity_matrix<T>(A.size1());
+  
+  // Perform back substitution to get the inverse
+  lu_substitute(A, pm, inverse);
+  
+  return inverse;
+}
+
+// Function to convert std::vector<std::vector<double>> to boost::ublas::matrix
+ublas::matrix<double> to_ublas_matrix(const std::vector<std::vector<double>>& std_matrix) {
+  size_t rows = std_matrix.size();
+  size_t cols = std_matrix.empty() ? 0 : std_matrix[0].size();
+  
+  // Initialize the ublas matrix with the same dimensions
+  ublas::matrix<double> ublas_matrix(rows, cols);
+  
+  // Copy data from std::vector<std::vector<double>> to ublas::matrix
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t j = 0; j < cols; ++j) {
+      ublas_matrix(i, j) = std_matrix[i][j];
+    }
+  }
+  
+  return ublas_matrix;
+}
+
+// Function to convert boost::ublas::matrix to std::vector<std::vector<double>>
+std::vector<std::vector<double>> to_std_matrix(const ublas::matrix<double>& ublas_matrix) {
+  size_t rows = ublas_matrix.size1();
+  size_t cols = ublas_matrix.size2();
+  
+  // Initialize a std::vector<std::vector<double>> with the same dimensions
+  std::vector<std::vector<double>> std_matrix(rows, std::vector<double>(cols));
+  
+  // Copy data from ublas::matrix to std::vector<std::vector<double>>
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t j = 0; j < cols; ++j) {
+      std_matrix[i][j] = ublas_matrix(i, j);
+    }
+  }
+  
+  return std_matrix;
+}
+
+ublas::matrix<double> vector_to_ublas(const std::vector<double>& flat_vector, size_t rows, size_t cols) {
+  if (flat_vector.size() != rows * cols) {
+    throw std::invalid_argument("Flat vector size does not match the specified matrix dimensions.");
+  }
+  
+  // Initialize the Boost matrix
+  ublas::matrix<double> ublas_matrix(rows, cols);
+  
+  // Copy the data from the vector to the matrix
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t j = 0; j < cols; ++j) {
+      ublas_matrix(i, j) = flat_vector[i * cols + j];
+    }
+  }
+  
+  return ublas_matrix;
+}
+
+std::vector<double> ublas_to_vector(const ublas::matrix<double>& ublas_matrix) {
+  size_t rows = ublas_matrix.size1();
+  size_t cols = ublas_matrix.size2();
+  
+  // Create a flat vector with the required size
+  std::vector<double> flat_vector(rows * cols);
+  
+  // Copy the data from the matrix to the vector
+  for (size_t i = 0; i < rows; ++i) {
+    for (size_t j = 0; j < cols; ++j) {
+      flat_vector[i * cols + j] = ublas_matrix(i, j);
+    }
+  }
+  
+  return flat_vector;
+}
+
+double dnorm(double x, double mean = 0.0, double sd = 1.0, bool log = false) {
+  const double inv_sqrt_2pi = 1.0 / std::sqrt(2.0 * M_PI);
+  double z = (x - mean) / sd;
+  double density = inv_sqrt_2pi / sd * std::exp(-0.5 * z * z);
+
+  return log ? std::log(density) : density;
+}
+
+std::vector<double> abs(vector<double>& x){
+  int n = x.size();
+  vector<double> xabs(n);
+  for(int i=0;i<n;++i){
+    xabs[i] = abs(x[i]);
+  }
+  return xabs;
+}
+
+std::mt19937 Random::rng; //= std::mt19937{std::random_device{}()}; // Default seed
+
+// ----- R2Cpp conversion starts here ----- //
+// ----- Please edit manually only if really needed! ----- //
+
